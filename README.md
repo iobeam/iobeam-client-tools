@@ -62,17 +62,16 @@ granularity (sec,msec,usec) should be specified as a program arg.
 optional arguments:
   -h, --help            show this help message and exit
   -v, --version         show program's version number and exit
-  -i INPUT_FILE         Input file (Required) (default: None)
+  -i INPUT_FILE         input file (required) (default: None)
   --pid PROJECT_ID      iobeam project ID (default: None)
   --did DEVICE_ID       iobeam device ID (auto-generated if not supplied)
                         (default: None)
   --token TOKEN         iobeam token (default: None)
-  --ts TIMESTAMP        Granularity of timestamp (sec, msec, usec) 
-                        (default: msec
-  --repeat REPETITIONS  Number of times to transmit file (0 = continuously)
+  --ts TIMESTAMP        timestamp fidelity (sec, msec, usec) (default: msec)
+  --repeat REPETITIONS  number of times to transmit file (0 = continuously)
                         (default: 1)
-  --rows ROWS_PER       Rows sent per iteration (0 = all) (default: 10)
-  --delay DELAY_BW      Delay between sending iteration (in milliseconds)
+  --rows ROWS_PER       rows sent per iteration (default: 10)
+  --delay DELAY_BW      delay between sending iteration (in milliseconds)
                         (default: 1000)
 ```
 

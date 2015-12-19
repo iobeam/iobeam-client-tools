@@ -42,10 +42,11 @@ class Config:
         self.formatWithoutTimestamp = None
         self.timestampIndex = -1
         self.timestampFormat = None
-        self.multiplier = None
+        self.timestampMultiplier = None
+        self.timestampSeparation = None
 
 
-def addData(config, data):
+def addData(config, data, epochTs, cnt):
 
     if len(config.format) != len(data):
         print "\nError: Number of data elements does not match format"
@@ -54,12 +55,12 @@ def addData(config, data):
         sys.exit(1)
 
     if config.timestampIndex < 0:
-        now = int(time.time() * config.multiplier)
-        ts = iobeam.Timestamp(now, unit=config.timestampFormat)
+        thisTs = int(round(epochTs + (cnt * config.timestampSeparation)))
+        ts = iobeam.Timestamp(thisTs, unit=config.timestampFormat)
         config.iobeamDataStore.add(ts, dict(zip(config.format, data)))
     else:
-        now = int(data[config.timestampIndex])
-        ts = iobeam.Timestamp(now, unit=config.timestampFormat)
+        thisTs = int(data[config.timestampIndex])
+        ts = iobeam.Timestamp(thisTs, unit=config.timestampFormat)
         del data[config.timestampIndex]
         config.iobeamDataStore.add(ts, dict(zip(config.formatWithoutTimestamp, data)))
 
@@ -86,16 +87,21 @@ def analyzeFile(config):
             # first_line is formatting.  Read past it.
             f.readline()
 
-            cnt = config.args.rows_per
-            for line in f:
-                addData(config, getDataLine(line))
+            epochTs = int(time.time() * config.timestampMultiplier)
+            cnt = 0
 
-                if config.args.rows_per > 0 and cnt == 0:
+            for line in f:
+                addData(config, getDataLine(line), epochTs, cnt)
+
+                if cnt >= (config.args.rows_per - 1):
                     config.iobeamClient.send()
                     print "Sent data batch to iobeam"
                     time.sleep((config.args.delay_bw / 1000.0))
-                    cnt = config.args.rows_per
-                cnt -= 1
+
+                    epochTs = int(time.time() * config.timestampMultiplier)
+                    cnt = 0
+                else:
+                    cnt += 1
 
             config.iobeamClient.send()
             print "Sent data batch to iobeam"
@@ -133,8 +139,8 @@ def checkArgs(config):
         error = "Unknown project ID"
     elif config.args.token == None:
         error = "Unknown project token"
-    elif config.args.rows_per < 0:
-        error = "Number of rows must be >= 0"
+    elif config.args.rows_per <= 0:
+        error = "Number of rows must be > 0"
     elif config.args.delay_bw < 0:
         error = "Delay must be >= 0 milliseconds"
     elif config.args.repetitions < 0:
@@ -143,13 +149,13 @@ def checkArgs(config):
         config.args.timestamp = config.args.timestamp.lower();
         if config.args.timestamp == 'sec':
             config.timestampFormat = iobeam.TimeUnit.SECONDS
-            config.multiplier = 1
+            config.timestampMultiplier = 1
         elif config.args.timestamp == 'msec':
             config.timestampFormat = iobeam.TimeUnit.MILLISECONDS
-            config.multiplier = 1000
+            config.timestampMultiplier = 1000
         elif config.args.timestamp == 'usec':
             config.timestampFormat = iobeam.TimeUnit.MICROSECONDS
-            config.multiplier = 1000000
+            config.timestampMultiplier = 1000000
         else:
             error = "Timestamp must be 'sec', 'msec', or 'usec'"
 
@@ -163,7 +169,7 @@ def checkArgs(config):
 if __name__ == "__main__":
 
     _parser.add_argument('-i', action='store', dest='input_file', required=True,
-                        help='Input file (Required)')
+                        help='input file (required)')
     _parser.add_argument('--pid', action='store', dest='project_id', type=int,
                         help='iobeam project ID', default=IOBEAM_PROJECT_ID)
     _parser.add_argument('--did', action='store', dest='device_id',
@@ -171,13 +177,13 @@ if __name__ == "__main__":
     _parser.add_argument('--token', action='store', dest='token',
                         help='iobeam token', default=IOBEAM_TOKEN)
     _parser.add_argument('--ts', action='store', dest='timestamp',
-                        help='Granularity of timestamp (sec, msec, usec)', default='msec')
+                        help='timestamp fidelity (sec, msec, usec)', default='msec')
     _parser.add_argument('--repeat', action='store', dest='repetitions', type=int,
-                        help='Number of times to transmit file (0 = continuously)', default=1)
+                        help='number of times to transmit file (0 = continuously)', default=1)
     _parser.add_argument('--rows', action='store', dest='rows_per', type=int,
-                        help='Rows sent per iteration (0 = all)', default=10)
+                        help='rows sent per iteration', default=10)
     _parser.add_argument('--delay', action='store', dest='delay_bw', type=int,
-                        help='Delay between sending iteration (in milliseconds)', default=1000)
+                        help='delay between sending iteration (in milliseconds)', default=1000)
 
 
     config = Config(_parser.parse_args())
@@ -185,7 +191,7 @@ if __name__ == "__main__":
     extractFileFormat(config)
 
     builder = iobeam.ClientBuilder(config.args.project_id, config.args.token) \
-        .setBackend("https://api-dev.iobeam.com/v1/") \
+        .setBackend("https://api.iobeam.com/v1/") \
         .saveToDisk()
 
     if config.args.device_id != None:
@@ -195,6 +201,15 @@ if __name__ == "__main__":
 
     config.iobeamClient = builder.build()
     config.iobeamDataStore = config.iobeamClient.createDataStore(config.formatWithoutTimestamp)
+
+    # For self-generated timestamps, provide smoothed timestamps over internal.
+    # Extra complexity to handle if # rows > delay, and if not using msec for timestamp.
+    if config.timestampIndex < 0:
+        config.timestampSeparation = float(config.args.delay_bw) / float(config.args.rows_per)
+        if config.timestampFormat == iobeam.TimeUnit.SECONDS:
+            config.timestampSeparation /= 1000;
+        elif config.timestampFormat == iobeam.TimeUnit.MICROSECONDS:
+            config.timestampSeparation *= 1000;
 
     if config.args.repetitions == 0:
         analyzeFile(config)
