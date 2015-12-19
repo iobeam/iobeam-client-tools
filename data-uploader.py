@@ -34,7 +34,6 @@ its granularity (sec,msec,usec) should be specified as a program arg.
 
 class Config:
     def __init__(self, args):
-        # Do not modify
         self.args = args
         self.iobeamClient = None
         self.iobeamDataStore = None
@@ -56,11 +55,11 @@ def addData(config, data):
 
     if config.timestampIndex < 0:
         now = int(time.time() * config.multiplier)
-        ts = iobeam.Timestamp(now, config.timestampFormat)
+        ts = iobeam.Timestamp(now, unit=config.timestampFormat)
         config.iobeamDataStore.add(ts, dict(zip(config.format, data)))
     else:
         now = int(data[config.timestampIndex])
-        ts = config.timestampFormat(now, config.timestampFormat)
+        ts = iobeam.Timestamp(now, unit=config.timestampFormat)
         del data[config.timestampIndex]
         config.iobeamDataStore.add(ts, dict(zip(config.formatWithoutTimestamp, data)))
 
@@ -90,6 +89,7 @@ def analyzeFile(config):
             cnt = config.args.rows_per
             for line in f:
                 addData(config, getDataLine(line))
+
                 if config.args.rows_per > 0 and cnt == 0:
                     config.iobeamClient.send()
                     print "Sent data batch to iobeam"
@@ -114,9 +114,9 @@ def extractFileFormat(config):
             first_line = f.readline()
             config.format = getDataFormat(first_line)
 
+            config.formatWithoutTimestamp = list(config.format)
             if 'timestamp' in config.format:
                 config.timestampIndex = config.format.index('timestamp')
-                config.formatWithoutTimestamp = list(config.format)
                 del config.formatWithoutTimestamp[config.timestampIndex]
 
     except (OSError, IOError) as e:
@@ -194,7 +194,7 @@ if __name__ == "__main__":
         builder.registerDevice()
 
     config.iobeamClient = builder.build()
-    config.iobeamDataStore = config.iobeamClient.createDataStore(config.format)
+    config.iobeamDataStore = config.iobeamClient.createDataStore(config.formatWithoutTimestamp)
 
     if config.args.repetitions == 0:
         analyzeFile(config)
