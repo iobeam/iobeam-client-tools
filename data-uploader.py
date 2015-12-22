@@ -16,7 +16,7 @@ METADATA_CHAR = '!'
 
 ###############################################################
 
-_parser = argparse.ArgumentParser(version='0.1',
+_parser = argparse.ArgumentParser(version='0.2',
                                  formatter_class=argparse.RawTextHelpFormatter,
                                  description='''
 Upload data to iobeam Cloud.
@@ -326,19 +326,15 @@ if __name__ == "__main__":
     configureMetaData(progInfo)
 
     builder = iobeam.ClientBuilder(args.project_id, args.token) \
-        .setBackend("https://api-dev.iobeam.com/v1/")
+        .setBackend("https://api.iobeam.com/v1/")
 
     for fileInfo in progInfo.files.values():
         deviceBuilder = None
         if fileInfo.device_id != None:
-            try:
-                fileInfo.iobeamClient = builder.registerDevice(deviceId=fileInfo.device_id,
-                                                               deviceName=fileInfo.device_name).build()
-                print "Registered new device %s [%s]: data format: %s" \
-                      % (fileInfo.device_id, fileInfo.device_name, fileInfo.format)
-            except:
-                fileInfo.iobeamClient = builder.registerOrSetId(deviceId=fileInfo.device_id).build()
-                print "Configured known device %s: data format: %s" % (fileInfo.device_id, fileInfo.format)
+            fileInfo.iobeamClient = builder.registerOrSetId(deviceId=fileInfo.device_id,
+                                                            deviceName=fileInfo.device_name).build()
+            print "Setup device %s [%s]: data format: %s" \
+                  % (fileInfo.device_id, fileInfo.device_name, fileInfo.format)
         else:
             fileInfo.iobeamClient = builder.saveToDisk().registerDevice().build()
 

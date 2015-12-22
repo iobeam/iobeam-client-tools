@@ -110,7 +110,7 @@ the UNIX epoch.
 
 ```text
 ! device_id: MY_DEVICE_ID
-! device_NAME: MY_DEVICE_NAME
+! device_name: MY_DEVICE_NAME
 ! columns: temperature, pressure 
 69.9320243493,705.780624978
 73.5739249027,688.000063244
@@ -121,7 +121,7 @@ the UNIX epoch.
 or
 ```text
 ! device_id: MY_DEVICE_ID
-! device_NAME: MY_DEVICE_NAME
+! device_name: MY_DEVICE_NAME
 ! columns: timestamp, temperature, pressure
 1450491262605,68.136342273,690.982706454
 1450491263448,69.7090621185,730.146114884
