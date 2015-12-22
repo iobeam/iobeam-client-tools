@@ -4,7 +4,7 @@
 
 For more information on iobeam, please [check out our documentation](https://docs.iobeam.com).
 
-*Please note that we are currently invite-only. You will need an invite
+Please note that we are currently invite-only. You will need an invite
 to generate a valid token and use our APIs.
 ([Sign up here](https://iobeam.com) for an invite.)*
 
@@ -16,8 +16,7 @@ Before you can start sending data to the iobeam backend, you'll need a
 [command-line interface (CLI) tool](https://github.com/iobeam/iobeam) or by
 accessing your project settings from [our web app](https://app.iobeam.com).
 
-You need python **2.7.9+** or **3.4.3+** (earlier versions of python3 may
-work, but it has not been tested).
+You currently need python **2.7.9+** for this script.
 
 ## Installation
 
@@ -31,9 +30,31 @@ Then, to get the tools directory:
 
     git clone https://github.com/iobeam/iobeam-client-tool.git
 
-## Uploading data to iobeam Cloud
+## Overview: Uploading data to iobeam Cloud
 
-This repository includes a tool for uploading data to the iobeam platform.
+This repository includes a tool for uploading data to the iobeam
+platform.  It allows you to upload data from multiple input files,
+with each file representing a different device.  It doesn't provide
+real parallelism, but round-robins data batches across the different
+devices.  That is, if the batch size (`--rows`) is 10, it'll first
+send 1-10 for device 1, 1-10 for device 2, etc., then rows 11-20 for
+device 1, 11-20 for device 2, etc.
+
+If one of the data files' columns is an integer `timestamp`, it will
+use that value as the timestamp for each data row.  If that timestamp
+is not in milliseconds, you need to specify its fidelity from the
+command line (`--ts`).
+
+If no timestamp column is provided -- which we expect to be the norm
+-- it will use the current local system time as the basis for sending
+a batch of data. Currently, it will align the timestamps across the
+rows of different files (devices), as well as smooth out timestamps in
+a batch. In particular, if the delay between batches (`--delay`) is
+1000ms, and the batch size is 10 rows, each row is given a timestamp
+that is 100ms apart (with the first element of the batch set to
+current system time).
+
+## Running the data uploader
 
 First, either edit the top of the data-uploader.py script to hard-code
 your projectID and token, or include them as command-line arguments
@@ -41,38 +62,44 @@ whenever you run the script.
 
 ```text
 $ python data-uploader.py -h
+usage: data-uploader.py [-h] [-v] [--pid PROJECT_ID] [--did DEVICE_ID]
+                        [--token TOKEN] [--ts TIMESTAMP] [--xmit XMIT_COUNT]
+                        [--rows ROWS_PER] [--delay DELAY_BW]
+                        input_file [input_file ...]
 
-usage: data-uploader.py [-h] [-v] -i INPUT_FILE [--pid PROJECT_ID]
-                        [--did DEVICE_ID] [--token TOKEN] [--ts TIMESTAMP]
-                        [--repeat REPETITIONS] [--rows ROWS_PER]
-                        [--delay DELAY_BW]
+Upload data to iobeam Cloud.
 
-Upload data to iobeam Cloud. 
+Required input file(s) should be in CSV form, with the header providing
+metadata detailing the columns, and optionally device ID/name information:
 
-Required input file should be in CSV form, with the first line
-providing the names of the columns in the form:
+    # This is a comment
+    ! device_id: DEV123
+    ! device_name: bored-panda-152
+    ! columns: col1, col2 ,col3, ..., colN
 
-  #col1,col2,col3,...,colN
+If one of the columns is 'timestamp', this integer value is used
+as the row's timestamp when uploading data to iobeam. Otherwise,
+the current time is used. If a timestamp is provided in the data,
+its granularity (sec,msec,usec) should be specified as a program arg.
 
-If one of the columns is 'timestamp', this integer value is used as
-the row's timestamp when uploading data to iobeam. Otherwise, the
-current time is used. If a timestamp is provided in the data, its
-granularity (sec,msec,usec) should be specified as a program arg.
+Device IDs must be specified in metadata headers if multiple input files
+are provided.  If a single input file is provided, device IDs can be
+specified either in metadata, from the command line, or the script
+will auto-assign.
+
+positional arguments:
+  input_file         input file(s)
 
 optional arguments:
-  -h, --help            show this help message and exit
-  -v, --version         show program's version number and exit
-  -i INPUT_FILE         input file (required) (default: None)
-  --pid PROJECT_ID      iobeam project ID (default: None)
-  --did DEVICE_ID       iobeam device ID (auto-generated if not supplied)
-                        (default: None)
-  --token TOKEN         iobeam token (default: None)
-  --ts TIMESTAMP        timestamp fidelity (sec, msec, usec) (default: msec)
-  --repeat REPETITIONS  number of times to transmit file (0 = continuously)
-                        (default: 1)
-  --rows ROWS_PER       rows sent per iteration (default: 10)
-  --delay DELAY_BW      delay between sending iteration (in milliseconds)
-                        (default: 1000)
+  -h, --help         show this help message and exit
+  -v, --version      show program's version number and exit
+  --pid PROJECT_ID   iobeam project ID
+  --did DEVICE_ID    iobeam device ID, auto-generated if not supplied
+  --token TOKEN      iobeam token
+  --ts TIMESTAMP     timestamp fidelity: sec, msec, usec (default: msec)
+  --xmit XMIT_COUNT  number of times to transmit file (continuously: 0, default: 1)
+  --rows ROWS_PER    rows sent per batch (default: 10)
+  --delay DELAY_BW   delay in msec between sending data batches (default: 1000)
 ```
 
 The required input file should have one of the two forms, where the
@@ -82,7 +109,9 @@ supplied timestamp must be an interger value, and sec/msec/usec since
 the UNIX epoch.
 
 ```text
-# temperature, pressure 
+! device_id: MY_DEVICE_ID
+! device_NAME: MY_DEVICE_NAME
+! columns: temperature, pressure 
 69.9320243493,705.780624978
 73.5739249027,688.000063244
 69.4814668231,762.891816604
@@ -91,11 +120,12 @@ the UNIX epoch.
 ```
 or
 ```text
-# timestamp, temperature, pressure
+! device_id: MY_DEVICE_ID
+! device_NAME: MY_DEVICE_NAME
+! columns: timestamp, temperature, pressure
 1450491262605,68.136342273,690.982706454
 1450491263448,69.7090621185,730.146114884
 1450491264649,68.3269429518,766.256505417
 1450491265216,66.410675139,709.655026995
 1450491266946,71.8243109375,752.015438456
 ```
-
