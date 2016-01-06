@@ -219,7 +219,7 @@ def extractAllMetaData(progInfo):
     if progInfo.args.device_id != None:
         assert (len(progInfo.files) == 1)
         fileInfo = progInfo.files[progInfo.args.input_file[0]]
-        if fileInfo.device_id != progInfo.args.device_id:
+        if (fileInfo.device_id != progInfo.args.device_id) and (fileInfo.device_id != None):
             returnError("Device information supplied does not match file metadata")
         else:
             fileInfo.device_id = progInfo.args.device_id

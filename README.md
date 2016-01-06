@@ -28,7 +28,7 @@ For more information or any problems, see [its github reposistory](https://githu
 
 Then, to get the tools directory:
 
-    git clone https://github.com/iobeam/iobeam-client-tool.git
+    git clone https://github.com/iobeam/iobeam-client-tools.git
 
 ## Overview: Uploading data to iobeam Cloud
 
