@@ -8,11 +8,14 @@ from iobeam import iobeam
 # Set project ID and token in source code, or from command line
 ###############################################################
 
-IOBEAM_PROJECT_ID = None 
+IOBEAM_PROJECT_ID = None
 IOBEAM_TOKEN = None
+
+###############################################################
 
 COMMENT_CHAR = '#'
 METADATA_CHAR = '!'
+BACKEND = "https://api.iobeam.com/v1/"
 
 ###############################################################
 
@@ -55,7 +58,6 @@ class ProgramInfo:
         self.timestampSeparation = None
         self.timestampFromColumns = False
 
-
 class FileInfo:
     def __init__(self, filename):
         self.filename = filename
@@ -83,11 +85,32 @@ def returnError(error):
 ###############################################################
 
 
+def cleanData(progInfo, fileInfo, rawData):
+
+    if len(fileInfo.format) != len(rawData):
+        errorMsg = "Number of columns mismatch in file %s: format %d, row %d" \
+            % (fileInfo.filename, len(fileInfo.format), len(rawData))
+        if progInfo.args.skip_invalid:
+            print "\nSkipping row: %s" % errorMsg
+            return None
+        else:
+            returnError(errorMsg)
+
+    cleanedData = []
+    for i in range(0,len(rawData)):
+        item = rawData[i]
+        if len(item) == 0 or item.lower() == progInfo.args.null_string:
+            cleanedData.append(None)
+        else:
+            cleanedData.append(item)
+    print "\t%s" % cleanedData
+    return cleanedData
+
+
 def addData(progInfo, fileInfo, data, epochTs, cnt):
 
     if len(fileInfo.format) != len(data):
-        returnError(("Number of data elements does not match format\n\tFormat:\t%s\n\tData:\t%s"
-                     % (fileInfo.format, data)))
+        returnError("Data cleaning failed: Incorrect number of columns");
 
     if fileInfo.timestampColumnIndex < 0:
         thisTs = int(round(epochTs + (cnt * progInfo.timestampSeparation)))
@@ -126,11 +149,13 @@ def analyzeFiles(progInfo):
                         continue
 
                     # Split CSV line into individual values
-                    data = map((lambda x: x.strip()), line.split(','))
+                    rawData = map((lambda x: x.strip()), line.split(','))
+                    cleanedData = cleanData(progInfo, fileInfo, rawData)
 
-                    addData(progInfo, fileInfo, data, epochTs, cnt)
-                    addedThis = True
-                    fileInfo.sent += 1
+                    if cleanedData:
+                        addData(progInfo, fileInfo, cleanedData, epochTs, cnt)
+                        addedThis = True
+                        fileInfo.sent += 1
 
                     if cnt >= (args.rows_per - 1):
                         break
@@ -317,6 +342,11 @@ if __name__ == "__main__":
                         help='rows sent per batch (default: 10)', default=10)
     _parser.add_argument('--delay', action='store', dest='delay_bw', type=int,
                         help='delay in msec between sending data batches (default: 1000)', default=1000)
+    _parser.add_argument('--null-string', action='store', dest='null_string',
+                         help='case-insensitive string to represent null element (default: null)', default='null')
+    _parser.add_argument('--skip-invalid', action='store_true', dest='skip_invalid',
+                         help='skip invalid rows from input (otherwise exits with error)')
+    _parser.set_defaults(skip_invalid=False)
 
     args = _parser.parse_args()
     checkArgs(args)
@@ -325,8 +355,7 @@ if __name__ == "__main__":
     extractAllMetaData(progInfo)
     configureMetaData(progInfo)
 
-    builder = iobeam.ClientBuilder(args.project_id, args.token) \
-        .setBackend("https://api.iobeam.com/v1/")
+    builder = iobeam.ClientBuilder(args.project_id, args.token).setBackend(BACKEND)
 
     for fileInfo in progInfo.files.values():
         deviceBuilder = None
