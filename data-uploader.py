@@ -1,8 +1,10 @@
 import argparse
 import time
 import sys
+import re
 
 from iobeam import iobeam
+from enum import Enum
 
 ###############################################################
 # Set project ID and token in source code, or from command line
@@ -25,7 +27,8 @@ _parser = argparse.ArgumentParser(version='0.2',
 Upload data to iobeam Cloud.
 
 Required input file(s) should be in CSV form, with the header providing
-metadata detailing the columns, and optionally device ID/name information:
+metadata detailing the column names and types, and optionally device
+ID/name information:
 
     # This is a comment
     ! device_id: DEV123
@@ -37,6 +40,21 @@ as the row\'s timestamp when uploading data to iobeam. Otherwise,
 the current time is used. If a timestamp is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
 
+As CSV input does not have type information (compared to JSON, for example),
+column types must be specified in header information, as either strings (s),
+numbers (n), or booleans (b). Type information should be given in brackets
+after the column name, e.g.,
+
+  ! columns: timestamp[n], name[s], temperature[n]
+
+If no type information is provided, a string is assumed:
+
+  ! columns: name, temperature[n]
+
+Column names must be alphanumeric or use special characters ('_', '-').
+Names are interpreted in case insensitive fashion. Reserved names 'time',
+'time_offset', and 'all' are not allowed.
+
 Device IDs must be specified in metadata headers if multiple input files
 are provided.  If a single input file is provided, device IDs can be
 specified either in metadata, from the command line, or the script
@@ -46,6 +64,11 @@ will auto-assign.
 
 
 ###############################################################
+
+class ColTypes(Enum):
+    string = 1
+    number = 2
+    bool = 3
 
 class ProgramInfo:
     def __init__(self, args):
@@ -64,8 +87,10 @@ class FileInfo:
         # Metadata extracted from input file headers
         self.device_id = None
         self.device_name = None
-        self.format = None
-        self.formatWithoutTimestamp = None
+        self.format = []
+        self.formatTypes = []
+        self.formatWithoutTimestamp = []
+        self.formatTypesWithoutTimestamp = []
         self.timestampColumnIndex = -1
 
         # iobeam objects
@@ -81,6 +106,30 @@ def returnError(error):
     print "\nError: %s" % error
     sys.exit(1)
 
+def skipRowOrError(skip_invalid, errorMsg):
+    if skip_invalid:
+        print "Skipping row: %s" % errorMsg
+        return None
+    else:
+        returnError(errorMsg)
+
+def toNumber(s):
+    try:
+        try:
+            return int(s)
+        except ValueError:
+            return float(s)
+    except ValueError:
+        return None
+
+def toBool(s):
+    s = s.lower()
+    if s == 'true' or s == '1':
+        return True
+    elif s == 'false' or s == '0':
+        return False
+    else:
+        return None
 
 ###############################################################
 
@@ -88,40 +137,62 @@ def returnError(error):
 def cleanData(progInfo, fileInfo, rawData):
 
     if len(fileInfo.format) != len(rawData):
-        errorMsg = "Number of columns mismatch in file %s: format %d, row %d" \
-            % (fileInfo.filename, len(fileInfo.format), len(rawData))
-        if progInfo.args.skip_invalid:
-            print "\nSkipping row: %s" % errorMsg
-            return None
-        else:
-            returnError(errorMsg)
+        return skipRowOrError(
+            progInfo.args.skip_invalid,
+            "Number of columns mismatch in file %s: format %d, row %d" \
+                % (fileInfo.filename, len(fileInfo.format), len(rawData)))
 
     cleanedData = []
     for i in range(0,len(rawData)):
         item = rawData[i]
         if len(item) == 0 or item.lower() == progInfo.args.null_string:
             cleanedData.append(None)
-        else:
+        elif fileInfo.formatTypes[i] == ColTypes.string:
             cleanedData.append(item)
-    print "\t%s" % cleanedData
+        elif fileInfo.formatTypes[i] == ColTypes.number:
+            number = toNumber(item)
+            if number == None:
+                return skipRowOrError(
+                    progInfo.args.skip_invalid,
+                    "Column %s data should be numeric: Got [%s] in file %s" \
+                        % (fileInfo.format[i], item, fileInfo.filename))
+            cleanedData.append(number)
+        elif fileInfo.formatTypes[i] == ColTypes.bool:
+            bool = toBool(item)
+            if bool == None:
+                return skipRowOrError(
+                    progInfo.args.skip_invalid,
+                    "Column %s data should be boolean: Got [%s] in file %s" \
+                    % (fileInfo.format[i], item, fileInfo.filename))
+            cleanedData.append(bool)
+        else:
+            raise ValueError("Unknown column type")
+
     return cleanedData
 
 
 def addData(progInfo, fileInfo, data, epochTs, cnt):
 
     if len(fileInfo.format) != len(data):
-        returnError("Data cleaning failed: Incorrect number of columns");
+        raise Exception("Data cleaning failed: Incorrect number of columns")
 
     if fileInfo.timestampColumnIndex < 0:
         thisTs = int(round(epochTs + (cnt * progInfo.timestampSeparation)))
         ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.format, data)))
     else:
-        thisTs = int(data[fileInfo.timestampColumnIndex])
+        thisTs = data[fileInfo.timestampColumnIndex]
+        if type(thisTs) is not int:
+            skipRowOrError(
+                progInfo.args.skip_invalid,
+                "Null timestamp in file %s: %s" % (fileInfo.filename, data))
+            return False
+
         ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
         del data[fileInfo.timestampColumnIndex]
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.formatWithoutTimestamp, data)))
 
+    return True
 
 def analyzeFiles(progInfo):
     inputFiles = []
@@ -153,9 +224,10 @@ def analyzeFiles(progInfo):
                     cleanedData = cleanData(progInfo, fileInfo, rawData)
 
                     if cleanedData:
-                        addData(progInfo, fileInfo, cleanedData, epochTs, cnt)
-                        addedThis = True
-                        fileInfo.sent += 1
+                        result = addData(progInfo, fileInfo, cleanedData, epochTs, cnt)
+                        if result:
+                            addedThis = True
+                            fileInfo.sent += 1
 
                     if cnt >= (args.rows_per - 1):
                         break
@@ -164,7 +236,7 @@ def analyzeFiles(progInfo):
 
 
                 if addedThis:
-                    print "Sent data batch to iobeam: %s" % fileInfo.filename
+                    print "Sending data batch to iobeam for file %s" % fileInfo.filename
                     fileInfo.iobeamClient.send()
                     addedAny = True
 
@@ -185,10 +257,52 @@ def getMetaData(line):
         key = line[1:i].strip().lower()
         value = line[(i+1):].strip()
         if key == 'columns':
-            value =  map((lambda x: x.strip()), value.split(','))
+            value = map((lambda x: x.strip()), value.split(','))
         return (key, value)
     except:
         return None
+
+
+def extractFormatAndTypes(fileInfo, metadata):
+
+    for col in metadata:
+        m = re.search('^([A-Za-z0-9_\-]+)(\[([A-Za-z]+)\])?', col)
+        if not m:
+            returnError("Invalid column specification in file %s: %s " % (fileInfo.filename, col))
+
+        colName = m.group(1)
+        if colName.lower() == 'timestamp':
+            colName = colName.lower()
+
+        fileInfo.format.append(colName)
+
+        colType = m.group(3)
+        if not colType:
+            fileInfo.formatTypes.append(ColTypes.string)
+        else:
+            colType = colType.lower()
+            if colType == 's':
+                fileInfo.formatTypes.append(ColTypes.string)
+            elif colType == 'n':
+                fileInfo.formatTypes.append(ColTypes.number)
+            elif colType == 'b':
+                fileInfo.formatTypes.append(ColTypes.bool)
+            else:
+                returnError("Invalid column type in file %s: %s " % (fileInfo.filename, col))
+
+    fileInfo.formatWithoutTimestamp = list(fileInfo.format)
+    fileInfo.formatTypesWithoutTimestamp = list(fileInfo.formatTypes)
+
+    if 'timestamp' in fileInfo.format:
+        timestampIndex = fileInfo.format.index('timestamp')
+        fileInfo.timestampColumnIndex = timestampIndex
+
+        if fileInfo.formatTypes[timestampIndex] != ColTypes.number:
+            returnError("Timestamp column not numeric type in file %s" % fileInfo.filename)
+
+        del fileInfo.formatWithoutTimestamp[timestampIndex]
+        del fileInfo.formatTypesWithoutTimestamp[timestampIndex]
+
 
 
 def extractMetaData(fileInfo):
@@ -215,12 +329,7 @@ def extractMetaData(fileInfo):
                 elif key == 'device_name':
                     fileInfo.device_name = value
                 elif key == 'columns':
-                    fileInfo.format = value
-
-                    fileInfo.formatWithoutTimestamp = list(fileInfo.format)
-                    if 'timestamp' in fileInfo.format:
-                        fileInfo.timestampColumnIndex = fileInfo.format.index('timestamp')
-                        del fileInfo.formatWithoutTimestamp[fileInfo.timestampColumnIndex]
+                    extractFormatAndTypes(fileInfo, value)
 
     except (OSError, IOError) as e:
         returnError("Problem accessing file %s" % fileInfo.filename)
