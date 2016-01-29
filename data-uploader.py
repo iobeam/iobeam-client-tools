@@ -1,6 +1,7 @@
 import argparse
 import time
 import sys
+import re
 
 from iobeam import iobeam
 
@@ -8,11 +9,14 @@ from iobeam import iobeam
 # Set project ID and token in source code, or from command line
 ###############################################################
 
-IOBEAM_PROJECT_ID = None 
+IOBEAM_PROJECT_ID = None
 IOBEAM_TOKEN = None
+
+###############################################################
 
 COMMENT_CHAR = '#'
 METADATA_CHAR = '!'
+BACKEND = "https://api.iobeam.com/v1/"
 
 ###############################################################
 
@@ -22,17 +26,33 @@ _parser = argparse.ArgumentParser(version='0.2',
 Upload data to iobeam Cloud.
 
 Required input file(s) should be in CSV form, with the header providing
-metadata detailing the columns, and optionally device ID/name information:
+metadata detailing the column names and types, and optionally device
+ID/name information:
 
     # This is a comment
     ! device_id: DEV123
     ! device_name: bored-panda-152
     ! columns: col1, col2 ,col3, ..., colN
     
-If one of the columns is \'timestamp\', this integer value is used
+If one of the columns is \'time\', this integer value is used
 as the row\'s timestamp when uploading data to iobeam. Otherwise,
-the current time is used. If a timestamp is provided in the data,
+the current time is used. If a time is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
+
+As CSV input does not have type information (compared to JSON, for example),
+column types must be specified in header information, as either strings (s),
+numbers (n), or booleans (b). Type information should be given in brackets
+after the column name, e.g.,
+
+  ! columns: time[n], name[s], temperature[n]
+
+If no type information is provided, a string is assumed:
+
+  ! columns: name, temperature[n]
+
+Column names must be alphanumeric or use special characters ('_', '-').
+Names are interpreted in case insensitive fashion. Reserved names 'time',
+'time_offset', and 'all' are not allowed.
 
 Device IDs must be specified in metadata headers if multiple input files
 are provided.  If a single input file is provided, device IDs can be
@@ -44,17 +64,21 @@ will auto-assign.
 
 ###############################################################
 
+class ColTypes:
+    string = 1
+    number = 2
+    bool = 3
+
 class ProgramInfo:
     def __init__(self, args):
         self.args = args
         self.files = {}
 
         # Manage timestamps, either from commend-line or from file metadata
-        self.timestampFormat = None
-        self.timestampMultiplier = None
-        self.timestampSeparation = None
-        self.timestampFromColumns = False
-
+        self.timeFidelity = None
+        self.timeMultiplier = None
+        self.timeSeparation = None
+        self.timeFromColumns = False
 
 class FileInfo:
     def __init__(self, filename):
@@ -62,8 +86,10 @@ class FileInfo:
         # Metadata extracted from input file headers
         self.device_id = None
         self.device_name = None
-        self.format = None
-        self.formatWithoutTimestamp = None
+        self.format = []
+        self.formatTypes = []
+        self.formatWithoutTimestamp = []
+        self.formatTypesWithoutTimestamp = []
         self.timestampColumnIndex = -1
 
         # iobeam objects
@@ -79,26 +105,93 @@ def returnError(error):
     print "\nError: %s" % error
     sys.exit(1)
 
+def skipRowOrError(skip_invalid, errorMsg):
+    if skip_invalid:
+        print "Skipping row: %s" % errorMsg
+        return None
+    else:
+        returnError(errorMsg)
+
+def toNumber(s):
+    try:
+        try:
+            return int(s)
+        except ValueError:
+            return float(s)
+    except ValueError:
+        return None
+
+def toBool(s):
+    s = s.lower()
+    if s == 'true' or s == '1':
+        return True
+    elif s == 'false' or s == '0':
+        return False
+    else:
+        return None
 
 ###############################################################
+
+
+def cleanData(progInfo, fileInfo, rawData):
+
+    if len(fileInfo.format) != len(rawData):
+        return skipRowOrError(
+            progInfo.args.skip_invalid,
+            "Number of columns mismatch in file %s: format %d, row %d" \
+                % (fileInfo.filename, len(fileInfo.format), len(rawData)))
+
+    cleanedData = []
+    for i in range(0,len(rawData)):
+        item = rawData[i]
+        if len(item) == 0 or item.lower() == progInfo.args.null_string:
+            cleanedData.append(None)
+        elif fileInfo.formatTypes[i] == ColTypes.string:
+            cleanedData.append(item)
+        elif fileInfo.formatTypes[i] == ColTypes.number:
+            number = toNumber(item)
+            if number == None:
+                return skipRowOrError(
+                    progInfo.args.skip_invalid,
+                    "Column %s data should be numeric: Got [%s] in file %s" \
+                        % (fileInfo.format[i], item, fileInfo.filename))
+            cleanedData.append(number)
+        elif fileInfo.formatTypes[i] == ColTypes.bool:
+            bool = toBool(item)
+            if bool == None:
+                return skipRowOrError(
+                    progInfo.args.skip_invalid,
+                    "Column %s data should be boolean: Got [%s] in file %s" \
+                    % (fileInfo.format[i], item, fileInfo.filename))
+            cleanedData.append(bool)
+        else:
+            raise ValueError("Unknown column type")
+
+    return cleanedData
 
 
 def addData(progInfo, fileInfo, data, epochTs, cnt):
 
     if len(fileInfo.format) != len(data):
-        returnError(("Number of data elements does not match format\n\tFormat:\t%s\n\tData:\t%s"
-                     % (fileInfo.format, data)))
+        raise Exception("Data cleaning failed: Incorrect number of columns")
 
     if fileInfo.timestampColumnIndex < 0:
-        thisTs = int(round(epochTs + (cnt * progInfo.timestampSeparation)))
-        ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
+        thisTs = int(round(epochTs + (cnt * progInfo.timeSeparation)))
+        ts = iobeam.Timestamp(thisTs, unit=progInfo.timeFidelity)
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.format, data)))
     else:
-        thisTs = int(data[fileInfo.timestampColumnIndex])
-        ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
+        thisTs = data[fileInfo.timestampColumnIndex]
+        if type(thisTs) is not int:
+            skipRowOrError(
+                progInfo.args.skip_invalid,
+                "Null time in file %s: %s" % (fileInfo.filename, data))
+            return False
+
+        ts = iobeam.Timestamp(thisTs, unit=progInfo.timeFidelity)
         del data[fileInfo.timestampColumnIndex]
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.formatWithoutTimestamp, data)))
 
+    return True
 
 def analyzeFiles(progInfo):
     inputFiles = []
@@ -115,7 +208,7 @@ def analyzeFiles(progInfo):
         while addedAny:
 
             addedAny = False
-            epochTs = int(time.time() * progInfo.timestampMultiplier)
+            epochTs = int(time.time() * progInfo.timeMultiplier)
 
             for fileInfo, file in inputFiles:
                 cnt = 0
@@ -126,11 +219,14 @@ def analyzeFiles(progInfo):
                         continue
 
                     # Split CSV line into individual values
-                    data = map((lambda x: x.strip()), line.split(','))
+                    rawData = map((lambda x: x.strip()), line.split(','))
+                    cleanedData = cleanData(progInfo, fileInfo, rawData)
 
-                    addData(progInfo, fileInfo, data, epochTs, cnt)
-                    addedThis = True
-                    fileInfo.sent += 1
+                    if cleanedData:
+                        result = addData(progInfo, fileInfo, cleanedData, epochTs, cnt)
+                        if result:
+                            addedThis = True
+                            fileInfo.sent += 1
 
                     if cnt >= (args.rows_per - 1):
                         break
@@ -139,7 +235,7 @@ def analyzeFiles(progInfo):
 
 
                 if addedThis:
-                    print "Sent data batch to iobeam: %s" % fileInfo.filename
+                    print "Sending data batch to iobeam for file %s" % fileInfo.filename
                     fileInfo.iobeamClient.send()
                     addedAny = True
 
@@ -160,10 +256,52 @@ def getMetaData(line):
         key = line[1:i].strip().lower()
         value = line[(i+1):].strip()
         if key == 'columns':
-            value =  map((lambda x: x.strip()), value.split(','))
+            value = map((lambda x: x.strip()), value.split(','))
         return (key, value)
     except:
         return None
+
+
+def extractFormatAndTypes(fileInfo, metadata):
+
+    for col in metadata:
+        m = re.search('^([A-Za-z0-9_\-]+)(\[([A-Za-z]+)\])?', col)
+        if not m:
+            returnError("Invalid column specification in file %s: %s " % (fileInfo.filename, col))
+
+        colName = m.group(1)
+        if colName.lower() == 'time':
+            colName = colName.lower()
+
+        fileInfo.format.append(colName)
+
+        colType = m.group(3)
+        if not colType:
+            fileInfo.formatTypes.append(ColTypes.string)
+        else:
+            colType = colType.lower()
+            if colType == 's':
+                fileInfo.formatTypes.append(ColTypes.string)
+            elif colType == 'n':
+                fileInfo.formatTypes.append(ColTypes.number)
+            elif colType == 'b':
+                fileInfo.formatTypes.append(ColTypes.bool)
+            else:
+                returnError("Invalid column type in file %s: %s " % (fileInfo.filename, col))
+
+    fileInfo.formatWithoutTimestamp = list(fileInfo.format)
+    fileInfo.formatTypesWithoutTimestamp = list(fileInfo.formatTypes)
+
+    if 'time' in fileInfo.format:
+        timestampIndex = fileInfo.format.index('time')
+        fileInfo.timestampColumnIndex = timestampIndex
+
+        if fileInfo.formatTypes[timestampIndex] != ColTypes.number:
+            returnError("Timestamp column not numeric type in file %s" % fileInfo.filename)
+
+        del fileInfo.formatWithoutTimestamp[timestampIndex]
+        del fileInfo.formatTypesWithoutTimestamp[timestampIndex]
+
 
 
 def extractMetaData(fileInfo):
@@ -190,12 +328,7 @@ def extractMetaData(fileInfo):
                 elif key == 'device_name':
                     fileInfo.device_name = value
                 elif key == 'columns':
-                    fileInfo.format = value
-
-                    fileInfo.formatWithoutTimestamp = list(fileInfo.format)
-                    if 'timestamp' in fileInfo.format:
-                        fileInfo.timestampColumnIndex = fileInfo.format.index('timestamp')
-                        del fileInfo.formatWithoutTimestamp[fileInfo.timestampColumnIndex]
+                    extractFormatAndTypes(fileInfo, value)
 
     except (OSError, IOError) as e:
         returnError("Problem accessing file %s" % fileInfo.filename)
@@ -240,35 +373,35 @@ def extractAllMetaData(progInfo):
             countTimestampInMetadata += 1
 
     if countTimestampInMetadata == 0:
-        progInfo.timestampFromColumns = False
+        progInfo.timeFromColumns = False
     elif countTimestampInMetadata == len(progInfo.files):
-        progInfo.timestampFromColumns = True
+        progInfo.timeFromColumns = True
     else:
         returnError("Timestamps must be present in all data files or none")
 
 
 def configureMetaData(progInfo):
 
-    if progInfo.args.timestamp == 'sec':
-        progInfo.timestampFormat = iobeam.TimeUnit.SECONDS
-        progInfo.timestampMultiplier = 1
-    elif progInfo.args.timestamp == 'msec':
-        progInfo.timestampFormat = iobeam.TimeUnit.MILLISECONDS
-        progInfo.timestampMultiplier = 1000
-    elif progInfo.args.timestamp == 'usec':
-        progInfo.timestampFormat = iobeam.TimeUnit.MICROSECONDS
-        progInfo.timestampMultiplier = 1000000
+    if progInfo.args.time_fidelity == 'sec':
+        progInfo.timeFidelity = iobeam.TimeUnit.SECONDS
+        progInfo.timeMultiplier = 1
+    elif progInfo.args.time_fidelity == 'msec':
+        progInfo.timeFidelity = iobeam.TimeUnit.MILLISECONDS
+        progInfo.timeMultiplier = 1000
+    elif progInfo.args.time_fidelity == 'usec':
+        progInfo.timeFidelity = iobeam.TimeUnit.MICROSECONDS
+        progInfo.timeMultiplier = 1000000
     else:
         assert(False)
 
     # For self-generated timestamps, provide smoothed timestamps over internal.
     # Extra complexity to handle if # rows > delay, and if not using msec for timestamp.
-    if not progInfo.timestampFromColumns:
-        progInfo.timestampSeparation = float(progInfo.args.delay_bw) / float(progInfo.args.rows_per)
-        if progInfo.timestampFormat == iobeam.TimeUnit.SECONDS:
-            progInfo.timestampSeparation /= 1000;
-        elif progInfo.timestampFormat == iobeam.TimeUnit.MICROSECONDS:
-            progInfo.timestampSeparation *= 1000;
+    if not progInfo.timeFromColumns:
+        progInfo.timeSeparation = float(progInfo.args.delay_bw) / float(progInfo.args.rows_per)
+        if progInfo.timeFidelity == iobeam.TimeUnit.SECONDS:
+            progInfo.timeSeparation /= 1000;
+        elif progInfo.timeFidelity == iobeam.TimeUnit.MICROSECONDS:
+            progInfo.timeSeparation *= 1000;
 
 
 
@@ -292,10 +425,11 @@ def checkArgs(args):
     if args.xmit_count < 0:
         returnError("xmit_count must be >= 0")
 
-    args.timestamp = args.timestamp.lower()
-    if not args.timestamp in ['sec', 'msec', 'usec']:
-        returnError("Timestamp must be 'sec', 'msec', or 'usec'")
+    args.time_fidelity = args.time_fidelity.lower()
+    if not args.time_fidelity in ['sec', 'msec', 'usec']:
+        returnError("Time fidelity must be 'sec', 'msec', or 'usec'")
 
+    args.null_string = args.null_string.lower()
 
 
 if __name__ == "__main__":
@@ -309,14 +443,19 @@ if __name__ == "__main__":
                         help='iobeam device ID, auto-generated if not supplied', default=None)
     _parser.add_argument('--token', action='store', dest='token',
                         help='iobeam token', default=IOBEAM_TOKEN)
-    _parser.add_argument('--ts', action='store', dest='timestamp',
-                        help='timestamp fidelity: sec, msec, usec (default: msec)', default='msec')
+    _parser.add_argument('--time-fidelity', action='store', dest='time_fidelity',
+                        help='time fidelity: sec, msec, usec (default: msec)', default='msec')
     _parser.add_argument('--xmit', action='store', dest='xmit_count', type=int,
                         help='number of times to transmit file (continuously: 0, default: 1)', default=1)
     _parser.add_argument('--rows', action='store', dest='rows_per', type=int,
                         help='rows sent per batch (default: 10)', default=10)
     _parser.add_argument('--delay', action='store', dest='delay_bw', type=int,
                         help='delay in msec between sending data batches (default: 1000)', default=1000)
+    _parser.add_argument('--null-string', action='store', dest='null_string',
+                         help='case-insensitive string to represent null element (default: null)', default='null')
+    _parser.add_argument('--skip-invalid', action='store_true', dest='skip_invalid',
+                         help='skip invalid rows from input (otherwise exits with error)')
+    _parser.set_defaults(skip_invalid=False)
 
     args = _parser.parse_args()
     checkArgs(args)
@@ -325,8 +464,7 @@ if __name__ == "__main__":
     extractAllMetaData(progInfo)
     configureMetaData(progInfo)
 
-    builder = iobeam.ClientBuilder(args.project_id, args.token) \
-        .setBackend("https://api.iobeam.com/v1/")
+    builder = iobeam.ClientBuilder(args.project_id, args.token).setBackend(BACKEND)
 
     for fileInfo in progInfo.files.values():
         deviceBuilder = None

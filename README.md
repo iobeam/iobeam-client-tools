@@ -40,19 +40,30 @@ devices.  That is, if the batch size (`--rows`) is 10, it'll first
 send 1-10 for device 1, 1-10 for device 2, etc., then rows 11-20 for
 device 1, 11-20 for device 2, etc.
 
-If one of the data files' columns is an integer `timestamp`, it will
-use that value as the timestamp for each data row.  If that timestamp
+If one of the data files' columns is an integer `time`, it will
+use that value as the timestamp for each data row.  If that time
 is not in milliseconds, you need to specify its fidelity from the
-command line (`--ts`).
+command line (`--time-fidelity`).
 
-If no timestamp column is provided -- which we expect to be the norm
+If no time column is provided -- which we expect to be the norm
 -- it will use the current local system time as the basis for sending
-a batch of data. Currently, it will align the timestamps across the
-rows of different files (devices), as well as smooth out timestamps in
+a batch of data. Currently, it will align the times across the
+rows of different files (devices), as well as smooth out times in
 a batch. In particular, if the delay between batches (`--delay`) is
-1000ms, and the batch size is 10 rows, each row is given a timestamp
+1000ms, and the batch size is 10 rows, each row is given a time
 that is 100ms apart (with the first element of the batch set to
 current system time).
+
+In order to send numeric or boolean data, you must explicitly specify
+those data types in the file header metadata, as detailed below.  From
+the type of data sent to the iobeam Cloud, it infers a loose data
+schema on the data.  This is across the entire project, so you can
+compare `temperature` data from one device to another.  For that
+reason, the type (string, numeric, or boolean) of a specific series
+name (given as a column in the CSV files) must be identical across the
+project.  In other words, some devices can't send a `temperature` as a
+string, while others send as a numeric.  For performance reasons, we
+suggest using sending numeric data whenever appropriate.
 
 ## Running the data uploader
 
@@ -63,24 +74,42 @@ whenever you run the script.
 ```text
 $ python data-uploader.py -h
 usage: data-uploader.py [-h] [-v] [--pid PROJECT_ID] [--did DEVICE_ID]
-                        [--token TOKEN] [--ts TIMESTAMP] [--xmit XMIT_COUNT]
-                        [--rows ROWS_PER] [--delay DELAY_BW]
+                        [--token TOKEN] [--time-fidelity TIME_FIDELITY]
+                        [--xmit XMIT_COUNT] [--rows ROWS_PER]
+                        [--delay DELAY_BW] [--null-string NULL_STRING]
+                        [--skip-invalid]
                         input_file [input_file ...]
 
 Upload data to iobeam Cloud.
 
 Required input file(s) should be in CSV form, with the header providing
-metadata detailing the columns, and optionally device ID/name information:
+metadata detailing the column names and types, and optionally device
+ID/name information:
 
     # This is a comment
     ! device_id: DEV123
     ! device_name: bored-panda-152
     ! columns: col1, col2 ,col3, ..., colN
-
-If one of the columns is 'timestamp', this integer value is used
+    
+If one of the columns is 'time', this integer value is used
 as the row's timestamp when uploading data to iobeam. Otherwise,
-the current time is used. If a timestamp is provided in the data,
+the current time is used. If a time is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
+
+As CSV input does not have type information (compared to JSON, for example),
+column types must be specified in header information, as either strings (s),
+numbers (n), or booleans (b). Type information should be given in brackets
+after the column name, e.g.,
+
+  ! columns: time[n], name[s], temperature[n]
+
+If no type information is provided, a string is assumed:
+
+  ! columns: name, temperature[n]
+
+Column names must be alphanumeric or use special characters ('_', '-').
+Names are interpreted in case insensitive fashion. Reserved names 'time',
+'time_offset', and 'all' are not allowed.
 
 Device IDs must be specified in metadata headers if multiple input files
 are provided.  If a single input file is provided, device IDs can be
@@ -88,18 +117,23 @@ specified either in metadata, from the command line, or the script
 will auto-assign.
 
 positional arguments:
-  input_file         input file(s)
+  input_file            input file(s)
 
 optional arguments:
-  -h, --help         show this help message and exit
-  -v, --version      show program's version number and exit
-  --pid PROJECT_ID   iobeam project ID
-  --did DEVICE_ID    iobeam device ID, auto-generated if not supplied
-  --token TOKEN      iobeam token
-  --ts TIMESTAMP     timestamp fidelity: sec, msec, usec (default: msec)
-  --xmit XMIT_COUNT  number of times to transmit file (continuously: 0, default: 1)
-  --rows ROWS_PER    rows sent per batch (default: 10)
-  --delay DELAY_BW   delay in msec between sending data batches (default: 1000)
+  -h, --help            show this help message and exit
+  -v, --version         show program's version number and exit
+  --pid PROJECT_ID      iobeam project ID
+  --did DEVICE_ID       iobeam device ID, auto-generated if not supplied
+  --token TOKEN         iobeam token
+  --time-fidelity TIME_FIDELITY
+                        time fidelity: sec, msec, usec (default: msec)
+  --xmit XMIT_COUNT     number of times to transmit file (continuously: 0, default: 1)
+  --rows ROWS_PER       rows sent per batch (default: 10)
+  --delay DELAY_BW      delay in msec between sending data batches (default: 1000)
+  --null-string NULL_STRING
+                        case-insensitive string to represent null element (default: null)
+  --skip-invalid        skip invalid rows from input (otherwise exits with error)
+
 ```
 
 The required input file should have one of the two forms, where the
