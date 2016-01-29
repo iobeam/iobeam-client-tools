@@ -4,7 +4,6 @@ import sys
 import re
 
 from iobeam import iobeam
-from enum import Enum
 
 ###############################################################
 # Set project ID and token in source code, or from command line
@@ -65,7 +64,7 @@ will auto-assign.
 
 ###############################################################
 
-class ColTypes(Enum):
+class ColTypes:
     string = 1
     number = 2
     bool = 3
@@ -430,6 +429,7 @@ def checkArgs(args):
     if not args.time_fidelity in ['sec', 'msec', 'usec']:
         returnError("Time fidelity must be 'sec', 'msec', or 'usec'")
 
+    args.null_string = args.null_string.lower()
 
 
 if __name__ == "__main__":
