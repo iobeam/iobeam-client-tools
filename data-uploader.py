@@ -35,9 +35,9 @@ ID/name information:
     ! device_name: bored-panda-152
     ! columns: col1, col2 ,col3, ..., colN
     
-If one of the columns is \'timestamp\', this integer value is used
+If one of the columns is \'time\', this integer value is used
 as the row\'s timestamp when uploading data to iobeam. Otherwise,
-the current time is used. If a timestamp is provided in the data,
+the current time is used. If a time is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
 
 As CSV input does not have type information (compared to JSON, for example),
@@ -45,7 +45,7 @@ column types must be specified in header information, as either strings (s),
 numbers (n), or booleans (b). Type information should be given in brackets
 after the column name, e.g.,
 
-  ! columns: timestamp[n], name[s], temperature[n]
+  ! columns: time[n], name[s], temperature[n]
 
 If no type information is provided, a string is assumed:
 
@@ -76,10 +76,10 @@ class ProgramInfo:
         self.files = {}
 
         # Manage timestamps, either from commend-line or from file metadata
-        self.timestampFormat = None
-        self.timestampMultiplier = None
-        self.timestampSeparation = None
-        self.timestampFromColumns = False
+        self.timeFidelity = None
+        self.timeMultiplier = None
+        self.timeSeparation = None
+        self.timeFromColumns = False
 
 class FileInfo:
     def __init__(self, filename):
@@ -177,18 +177,18 @@ def addData(progInfo, fileInfo, data, epochTs, cnt):
         raise Exception("Data cleaning failed: Incorrect number of columns")
 
     if fileInfo.timestampColumnIndex < 0:
-        thisTs = int(round(epochTs + (cnt * progInfo.timestampSeparation)))
-        ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
+        thisTs = int(round(epochTs + (cnt * progInfo.timeSeparation)))
+        ts = iobeam.Timestamp(thisTs, unit=progInfo.timeFidelity)
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.format, data)))
     else:
         thisTs = data[fileInfo.timestampColumnIndex]
         if type(thisTs) is not int:
             skipRowOrError(
                 progInfo.args.skip_invalid,
-                "Null timestamp in file %s: %s" % (fileInfo.filename, data))
+                "Null time in file %s: %s" % (fileInfo.filename, data))
             return False
 
-        ts = iobeam.Timestamp(thisTs, unit=progInfo.timestampFormat)
+        ts = iobeam.Timestamp(thisTs, unit=progInfo.timeFidelity)
         del data[fileInfo.timestampColumnIndex]
         fileInfo.iobeamDataStore.add(ts, dict(zip(fileInfo.formatWithoutTimestamp, data)))
 
@@ -209,7 +209,7 @@ def analyzeFiles(progInfo):
         while addedAny:
 
             addedAny = False
-            epochTs = int(time.time() * progInfo.timestampMultiplier)
+            epochTs = int(time.time() * progInfo.timeMultiplier)
 
             for fileInfo, file in inputFiles:
                 cnt = 0
@@ -271,7 +271,7 @@ def extractFormatAndTypes(fileInfo, metadata):
             returnError("Invalid column specification in file %s: %s " % (fileInfo.filename, col))
 
         colName = m.group(1)
-        if colName.lower() == 'timestamp':
+        if colName.lower() == 'time':
             colName = colName.lower()
 
         fileInfo.format.append(colName)
@@ -293,8 +293,8 @@ def extractFormatAndTypes(fileInfo, metadata):
     fileInfo.formatWithoutTimestamp = list(fileInfo.format)
     fileInfo.formatTypesWithoutTimestamp = list(fileInfo.formatTypes)
 
-    if 'timestamp' in fileInfo.format:
-        timestampIndex = fileInfo.format.index('timestamp')
+    if 'time' in fileInfo.format:
+        timestampIndex = fileInfo.format.index('time')
         fileInfo.timestampColumnIndex = timestampIndex
 
         if fileInfo.formatTypes[timestampIndex] != ColTypes.number:
@@ -374,35 +374,35 @@ def extractAllMetaData(progInfo):
             countTimestampInMetadata += 1
 
     if countTimestampInMetadata == 0:
-        progInfo.timestampFromColumns = False
+        progInfo.timeFromColumns = False
     elif countTimestampInMetadata == len(progInfo.files):
-        progInfo.timestampFromColumns = True
+        progInfo.timeFromColumns = True
     else:
         returnError("Timestamps must be present in all data files or none")
 
 
 def configureMetaData(progInfo):
 
-    if progInfo.args.timestamp == 'sec':
-        progInfo.timestampFormat = iobeam.TimeUnit.SECONDS
-        progInfo.timestampMultiplier = 1
-    elif progInfo.args.timestamp == 'msec':
-        progInfo.timestampFormat = iobeam.TimeUnit.MILLISECONDS
-        progInfo.timestampMultiplier = 1000
-    elif progInfo.args.timestamp == 'usec':
-        progInfo.timestampFormat = iobeam.TimeUnit.MICROSECONDS
-        progInfo.timestampMultiplier = 1000000
+    if progInfo.args.time_fidelity == 'sec':
+        progInfo.timeFidelity = iobeam.TimeUnit.SECONDS
+        progInfo.timeMultiplier = 1
+    elif progInfo.args.time_fidelity == 'msec':
+        progInfo.timeFidelity = iobeam.TimeUnit.MILLISECONDS
+        progInfo.timeMultiplier = 1000
+    elif progInfo.args.time_fidelity == 'usec':
+        progInfo.timeFidelity = iobeam.TimeUnit.MICROSECONDS
+        progInfo.timeMultiplier = 1000000
     else:
         assert(False)
 
     # For self-generated timestamps, provide smoothed timestamps over internal.
     # Extra complexity to handle if # rows > delay, and if not using msec for timestamp.
-    if not progInfo.timestampFromColumns:
-        progInfo.timestampSeparation = float(progInfo.args.delay_bw) / float(progInfo.args.rows_per)
-        if progInfo.timestampFormat == iobeam.TimeUnit.SECONDS:
-            progInfo.timestampSeparation /= 1000;
-        elif progInfo.timestampFormat == iobeam.TimeUnit.MICROSECONDS:
-            progInfo.timestampSeparation *= 1000;
+    if not progInfo.timeFromColumns:
+        progInfo.timeSeparation = float(progInfo.args.delay_bw) / float(progInfo.args.rows_per)
+        if progInfo.timeFidelity == iobeam.TimeUnit.SECONDS:
+            progInfo.timeSeparation /= 1000;
+        elif progInfo.timeFidelity == iobeam.TimeUnit.MICROSECONDS:
+            progInfo.timeSeparation *= 1000;
 
 
 
@@ -426,9 +426,9 @@ def checkArgs(args):
     if args.xmit_count < 0:
         returnError("xmit_count must be >= 0")
 
-    args.timestamp = args.timestamp.lower()
-    if not args.timestamp in ['sec', 'msec', 'usec']:
-        returnError("Timestamp must be 'sec', 'msec', or 'usec'")
+    args.time_fidelity = args.time_fidelity.lower()
+    if not args.time_fidelity in ['sec', 'msec', 'usec']:
+        returnError("Time fidelity must be 'sec', 'msec', or 'usec'")
 
 
 
@@ -443,8 +443,8 @@ if __name__ == "__main__":
                         help='iobeam device ID, auto-generated if not supplied', default=None)
     _parser.add_argument('--token', action='store', dest='token',
                         help='iobeam token', default=IOBEAM_TOKEN)
-    _parser.add_argument('--ts', action='store', dest='timestamp',
-                        help='timestamp fidelity: sec, msec, usec (default: msec)', default='msec')
+    _parser.add_argument('--time-fidelity', action='store', dest='time_fidelity',
+                        help='time fidelity: sec, msec, usec (default: msec)', default='msec')
     _parser.add_argument('--xmit', action='store', dest='xmit_count', type=int,
                         help='number of times to transmit file (continuously: 0, default: 1)', default=1)
     _parser.add_argument('--rows', action='store', dest='rows_per', type=int,
