@@ -1,6 +1,6 @@
 ! device_id: UPLOADER_TEST_1
 ! device_name: UPLOADER_TEST_1
-! columns: temperature, pressure 
+! columns: temperature[n], pressure[n]
 69.9320243493,705.780624978
 73.5739249027,688.000063244
 69.4814668231,762.891816604

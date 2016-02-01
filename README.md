@@ -20,9 +20,9 @@ You currently need python **2.7.9+** for this script.
 
 ## Installation
 
-First, install the iobeam python library:
+First, install or upgrade the iobeam python library:
 
-    pip install iobeam
+    pip install -U iobeam
 
 For more information or any problems, see [its github reposistory](https://github.com/iobeam/iobeam-client-python).
 
@@ -145,7 +145,7 @@ the UNIX epoch.
 ```text
 ! device_id: MY_DEVICE_ID
 ! device_name: MY_DEVICE_NAME
-! columns: temperature, pressure 
+! columns: temperature[n], pressure[n] 
 69.9320243493,705.780624978
 73.5739249027,688.000063244
 69.4814668231,762.891816604
@@ -156,7 +156,7 @@ or
 ```text
 ! device_id: MY_DEVICE_ID
 ! device_name: MY_DEVICE_NAME
-! columns: timestamp, temperature, pressure
+! columns: timestamp[n], temperature[n], pressure[n]
 1450491262605,68.136342273,690.982706454
 1450491263448,69.7090621185,730.146114884
 1450491264649,68.3269429518,766.256505417
