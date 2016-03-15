@@ -39,6 +39,11 @@ as the row\'s timestamp when uploading data to iobeam. Otherwise,
 the current time is used. If a time is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
 
+If this time is provided, the uploader can use these times to
+determine the delay between transmitting each row (or at some rate
+that is faster/slower than the timestamp time). See --xmit-by-time and
+--xmit-fast-forward-rate options.
+
 As CSV input does not have type information (compared to JSON, for example),
 column types must be specified in header information, as either strings (s),
 numbers (n), or booleans (b). Type information should be given in brackets
@@ -74,7 +79,7 @@ class ProgramInfo:
         self.args = args
         self.files = {}
 
-        # Manage timestamps, either from commend-line or from file metadata
+        # Manage timestamps, either from command-line or from file metadata
         self.timeFidelity = None
         self.timeMultiplier = None
         self.timeSeparation = None
@@ -133,6 +138,10 @@ def toBool(s):
 ###############################################################
 
 
+def splitData(line):
+    return map((lambda x: x.strip()), line.split(','))
+
+
 def cleanData(progInfo, fileInfo, rawData):
 
     if len(fileInfo.format) != len(rawData):
@@ -170,7 +179,7 @@ def cleanData(progInfo, fileInfo, rawData):
     return cleanedData
 
 
-def addData(progInfo, fileInfo, data, epochTs, cnt):
+def addData(progInfo, fileInfo, data, epochTs=0, cnt=0):
 
     if len(fileInfo.format) != len(data):
         raise Exception("Data cleaning failed: Incorrect number of columns")
@@ -193,7 +202,11 @@ def addData(progInfo, fileInfo, data, epochTs, cnt):
 
     return True
 
+
+# Upload delay between data batches accorded to cmd line option
 def analyzeFiles(progInfo):
+    assert(not progInfo.args.xmit_by_column_time)
+
     inputFiles = []
     try:
         for fileInfo in progInfo.files.values():
@@ -201,7 +214,6 @@ def analyzeFiles(progInfo):
 
     except (OSError, IOError) as e:
         returnError("Problem opening file")
-
 
     try:
         addedAny = True
@@ -219,8 +231,7 @@ def analyzeFiles(progInfo):
                         continue
 
                     # Split CSV line into individual values
-                    rawData = map((lambda x: x.strip()), line.split(','))
-                    cleanedData = cleanData(progInfo, fileInfo, rawData)
+                    cleanedData = cleanData(progInfo, fileInfo, splitData(line))
 
                     if cleanedData:
                         result = addData(progInfo, fileInfo, cleanedData, epochTs, cnt)
@@ -233,7 +244,6 @@ def analyzeFiles(progInfo):
                     else:
                         cnt += 1
 
-
                 if addedThis:
                     print "Sending data batch to iobeam for file %s" % fileInfo.filename
                     fileInfo.iobeamClient.send()
@@ -244,6 +254,65 @@ def analyzeFiles(progInfo):
 
     except (OSError, IOError) as e:
         returnError("Problem reading file")
+
+
+# Upload delay between data rows accorded to in-file timestamps
+def analyzeFileWithIncludedDelay(progInfo):
+    assert(progInfo.args.xmit_by_column_time)
+
+    fileInfo = None
+    file = None
+    try:
+        for info in progInfo.files.values():
+            fileInfo = info
+            file = open(fileInfo.filename, 'r')
+
+    except (OSError, IOError) as e:
+        returnError("Problem opening file")
+
+    try:
+        line = file.readline()
+        nextCleanedData = None
+
+        while line:
+            line = line.strip()
+            if len(line) == 0 or line[0] == COMMENT_CHAR or line[0] == METADATA_CHAR:
+                line = file.readline()
+                continue
+
+            if nextCleanedData:
+                cleanedData = nextCleanedData
+            else:
+                # Split CSV line into individual values
+                cleanedData = cleanData(progInfo, fileInfo, splitData(line))
+
+            if not cleanedData:
+                line = file.readline()
+                continue
+
+            thisTime = cleanedData[fileInfo.timestampColumnIndex]
+            result = addData(progInfo, fileInfo, cleanedData)
+            if result:
+                fileInfo.sent += 1
+                fileInfo.iobeamClient.send()
+
+            nextLine = file.readline()
+            if nextLine:
+                # Split CSV line into individual values
+                nextCleanedData = cleanData(progInfo, fileInfo, splitData(nextLine))
+                nextTime = nextCleanedData[fileInfo.timestampColumnIndex]
+                difference = nextTime - thisTime
+                if difference > 0:
+                    delay = float(difference) / (progInfo.args.xmit_fast_forward_rate * progInfo.timeMultiplier)
+                    print "Sent %d rows, pausing %d msec" % (fileInfo.sent, round(delay * 1000))
+                    time.sleep(delay)
+
+            line = nextLine
+
+    except (OSError) as e:
+        print e
+        returnError("Problem reading file")
+
 
 
 ###############################################################
@@ -379,6 +448,10 @@ def extractAllMetaData(progInfo):
     else:
         returnError("Timestamps must be present in all data files or none")
 
+    if progInfo.args.xmit_by_column_time and not progInfo.timeFromColumns:
+        returnError("Transmission by included time requested, but no timestamps present in input file(s)")
+
+
 
 def configureMetaData(progInfo):
 
@@ -429,6 +502,17 @@ def checkArgs(args):
     if not args.time_fidelity in ['sec', 'msec', 'usec']:
         returnError("Time fidelity must be 'sec', 'msec', or 'usec'")
 
+    if args.xmit_by_column_time:
+        if args.xmit_fast_forward_rate <= 0.0:
+            returnError("Fast forward rate must be > 0")
+        if len(args.input_file) != 1:
+            returnError("Transmission by column times only supports a single input file")
+
+        args.rows_per = 1
+    else:
+        if args.xmit_fast_forward_rate != 1.0:
+            returnError("Fast forward rate requires --xmit-by-time")
+
     args.null_string = args.null_string.lower()
 
 
@@ -451,11 +535,18 @@ if __name__ == "__main__":
                         help='rows sent per batch (default: 10)', default=10)
     _parser.add_argument('--delay', action='store', dest='delay_bw', type=int,
                         help='delay in msec between sending data batches (default: 1000)', default=1000)
+    _parser.add_argument('--xmit-by-time', action='store_true', dest='xmit_by_column_time',
+                         help='delay transmission of successful data rows according to included times')
+    _parser.add_argument('--xmit-fast-forward-rate', action='store', dest='xmit_fast_forward_rate', type=float,
+                         help='fast forward rate for transmitting data according to timestamp (default: 1.0)',
+                         default=1.0)
     _parser.add_argument('--null-string', action='store', dest='null_string',
                          help='case-insensitive string to represent null element (default: null)', default='null')
     _parser.add_argument('--skip-invalid', action='store_true', dest='skip_invalid',
                          help='skip invalid rows from input (otherwise exits with error)')
+
     _parser.set_defaults(skip_invalid=False)
+    _parser.set_defaults(xmit_by_column_time=False)
 
     args = _parser.parse_args()
     checkArgs(args)
@@ -481,7 +572,10 @@ if __name__ == "__main__":
 
     repeated = 0
     while args.xmit_count == 0 or repeated < args.xmit_count:
-        analyzeFiles(progInfo)
+        if progInfo.args.xmit_by_column_time:
+            analyzeFileWithIncludedDelay(progInfo)
+        else:
+            analyzeFiles(progInfo)
         repeated += 1
 
     print "\nResults:"
