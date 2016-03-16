@@ -45,14 +45,21 @@ use that value as the timestamp for each data row.  If that time
 is not in milliseconds, you need to specify its fidelity from the
 command line (`--time-fidelity`).
 
-If no time column is provided -- which we expect to be the norm
--- it will use the current local system time as the basis for sending
-a batch of data. Currently, it will align the times across the
-rows of different files (devices), as well as smooth out times in
-a batch. In particular, if the delay between batches (`--delay`) is
-1000ms, and the batch size is 10 rows, each row is given a time
-that is 100ms apart (with the first element of the batch set to
-current system time).
+Additionally, if timestamps are provided, the uploader can use the
+time difference between subsequent rows of data to delay uploads.
+This is designed to emulate how such a device would be uploading data
+in more real-world conditions.  Note this mode only allows the
+uploader to send data from a single data file (or device), and only
+one row at a time.  See the --xmit-by-time and
+--xmit-fast-forward-rate command-line options.
+
+If no time column is provided, it will use the current local system
+time as the basis for sending a batch of data.  Currently, it will
+align the times across the rows of different files (devices), as well
+as smooth out times in a batch.  In particular, if the delay between
+batches (`--delay`) is 1000ms, and the batch size is 10 rows, each row
+is given a time that is 100ms apart (with the first element of the
+batch set to current system time).
 
 In order to send numeric or boolean data, you must explicitly specify
 those data types in the file header metadata, as detailed below.  From
@@ -73,10 +80,10 @@ whenever you run the script.
 
 ```text
 $ python data-uploader.py -h
-usage: data-uploader.py [-h] [-v] [--pid PROJECT_ID] [--did DEVICE_ID]
-                        [--token TOKEN] [--time-fidelity TIME_FIDELITY]
-                        [--xmit XMIT_COUNT] [--rows ROWS_PER]
-                        [--delay DELAY_BW] [--null-string NULL_STRING]
+usage: data-uploader.py [-h] [-v] [--pid PROJECT_ID] [--did DEVICE_ID] [--token TOKEN]
+                        [--time-fidelity TIME_FIDELITY] [--xmit XMIT_COUNT] [--rows ROWS_PER]
+                        [--delay DELAY_BW] [--xmit-by-time]
+                        [--xmit-fast-forward-rate XMIT_FAST_FORWARD_RATE] [--null-string NULL_STRING]
                         [--skip-invalid]
                         input_file [input_file ...]
 
@@ -95,6 +102,11 @@ If one of the columns is 'time', this integer value is used
 as the row's timestamp when uploading data to iobeam. Otherwise,
 the current time is used. If a time is provided in the data,
 its granularity (sec,msec,usec) should be specified as a program arg.
+
+If this time is provided, the uploader can use these times to
+determine the delay between transmitting each row (or at some rate
+that is faster/slower than the timestamp time). See --xmit-by-time and
+--xmit-fast-forward-rate options.
 
 As CSV input does not have type information (compared to JSON, for example),
 column types must be specified in header information, as either strings (s),
@@ -130,6 +142,9 @@ optional arguments:
   --xmit XMIT_COUNT     number of times to transmit file (continuously: 0, default: 1)
   --rows ROWS_PER       rows sent per batch (default: 10)
   --delay DELAY_BW      delay in msec between sending data batches (default: 1000)
+  --xmit-by-time        delay transmission of successful data rows according to included times
+  --xmit-fast-forward-rate XMIT_FAST_FORWARD_RATE
+                        fast forward rate for transmitting data according to timestamp (default: 1.0)
   --null-string NULL_STRING
                         case-insensitive string to represent null element (default: null)
   --skip-invalid        skip invalid rows from input (otherwise exits with error)
